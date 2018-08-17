@@ -3,7 +3,9 @@ import torch
 import torchvision
 from torch.utils.data import DataLoader
 from torchvision import transforms
+import visdom
 
+viz = visdom.Visdom()
 def conv3x3(in_planes, out_planes, stride=1):
 	return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
 
@@ -24,7 +26,7 @@ class SELayer(nn.Module):  # SeNet Block.
 		y = self.fc(y).view(b, c, 1, 1)
 		return x * y
 
-class CifarSEBasicBlock(nn.Module):  # Residual Block
+class CifarSEBasicBlock(nn.Module):
 	def __init__(self, inplanes, planes, stride=1, reduction=16):
 		super(CifarSEBasicBlock, self).__init__()
 		self.conv1 = conv3x3(inplanes, planes, stride)
@@ -34,7 +36,8 @@ class CifarSEBasicBlock(nn.Module):  # Residual Block
 		self.bn2 = nn.BatchNorm2d(planes)
 		self.se = SELayer(planes, reduction)
 		if inplanes != planes:
-			self.downsample = nn.Sequential(nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False), nn.BatchNorm2d(planes))
+			self.downsample = nn.Sequential(nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False),
+                                            nn.BatchNorm2d(planes))
 		else:
 			self.downsample = lambda x: x
 		self.stride = stride
@@ -47,13 +50,12 @@ class CifarSEBasicBlock(nn.Module):  # Residual Block
 
 		out = self.conv2(out)
 		out = self.bn2(out)
-		out = self.se(out)  # SeNet
+		out = self.se(out)
 
 		out += residual
 		out = self.relu(out)
 
 		return out
-
 class CifarSEResNet(nn.Module):
 	def __init__(self, block, n_size, num_classes=10, reduction=16):
 		super(CifarSEResNet, self).__init__()
@@ -100,29 +102,36 @@ class CifarSEResNet(nn.Module):
 
 		return x
 
-
-def se_resnet20(**kwargs):
-	model = CifarSEResNet(CifarSEBasicBlock, 3, **kwargs)
+def se_resnet56(**kwargs):
+	"""Constructs a ResNet-34 model.
+	"""
+	model = CifarSEResNet(CifarSEBasicBlock, 5, **kwargs)
 	return model
 
 
 # Data loading
-to_normalized_tensor = [transforms.ToTensor(), transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))]
+to_normalized_tensor = [transforms.ToTensor(), transforms.Normalize((0.5070754, 0.48655024, 0.44091907),
+																	(0.26733398, 0.25643876, 0.2761503))]
 data_augmentation = [transforms.RandomCrop(32, padding=4), transforms.RandomHorizontalFlip()]
 
 train_data = torchvision.datasets.CIFAR100(root='/home/cz/', train=True, download=True, transform=transforms.Compose(data_augmentation + to_normalized_tensor))
 
-train_loader = torch.utils.data.DataLoader(train_data, batch_size=100, shuffle=True, num_workers=2)
+train_loader = torch.utils.data.DataLoader(train_data, batch_size=32, shuffle=True, num_workers=2)
 
 test_data = torchvision.datasets.CIFAR100(root='/home/cz/', train=False, download=True, transform=transforms.Compose(data_augmentation + to_normalized_tensor))
 
-test_loader = torch.utils.data.DataLoader(test_data, batch_size=100, shuffle=True, num_workers=2)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=32, shuffle=True, num_workers=2)
 
-SeResnet = se_resnet20(num_classes=100)
+SeResnet = se_resnet56(num_classes=100)
+print(SeResnet)
 lossfunc = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(SeResnet.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(SeResnet.parameters(), lr=0.0007)
 
-for epoch in range(10):
+lossdata = []
+accdata = []
+loss = 0
+accuracy = 0
+for epoch in range(20):
 	for i, data in enumerate(train_loader, 0):
 		images, labels = data
 		optimizer.zero_grad()
@@ -142,3 +151,14 @@ for epoch in range(10):
 				test_times += test_labels.size(0)
 				accuracy = float(correct) / float(test_times)
 			print('[%d,%5d]   Loss:%.3f' % (epoch + 1, i + 1, loss), '  Accuracy %.4f' % accuracy)
+	lossdata.append(loss)
+	accdata.append(accuracy)
+
+
+torch.save(SeResnet.state_dict(), '/home/cz/SeResnet.pkl')
+lossdata = torch.Tensor(lossdata)
+accdata = torch.Tensor(accdata)
+x = torch.range(1, 20)
+
+viz.line(lossdata, x, opts=dict(title='loss'))
+viz.line(accdata, x, opts=dict(title='acc'))
